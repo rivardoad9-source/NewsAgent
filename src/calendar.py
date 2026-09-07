@@ -24,6 +24,9 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import requests
+from dotenv import load_dotenv
+
+load_dotenv()  # modul dipakai CLI & dashboard; dotenv tidak auto-load oleh Python
 
 FRED_BASE_URL = "https://api.stlouisfed.org/fred"
 DEFAULT_TIMEOUT = 20

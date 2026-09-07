@@ -10,6 +10,7 @@ hanya menyajikan - tidak ada satu pun verdict yang ditentukan di file ini.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -31,6 +32,7 @@ from src.rule_engine import (  # noqa: E402
     get_playbook,
     get_verdict,
 )
+from src import calendar as macro_calendar  # noqa: E402
 from src import telegram_bot  # noqa: E402
 from src.providers import fmp  # noqa: E402
 from src.action import TIMEFRAMES, build_action_plan, load_calibration  # noqa: E402
@@ -254,6 +256,62 @@ def load_calendar() -> pd.DataFrame:
     df["scheduled_et"] = df["scheduled_utc"].apply(lambda d: d.astimezone(ET))
     df["days_out"] = df["scheduled_utc"].apply(lambda d: (d - NOW_UTC).total_seconds() / 86400)
     return df.sort_values("scheduled_utc").reset_index(drop=True)
+
+
+@st.cache_data(ttl=1800, show_spinner="Kalender FRED...")
+def load_real_releases() -> pd.DataFrame:
+    """
+    Rilis NYATA dari FRED (bukan simulasi): terakhir per indikator + berikutnya
+    yang sudah dikonfirmasi. FRED mengunci jadwal ~2-4 minggu sebelum H-1, jadi
+    kolom berikutnya sering kosong - itu normal dan ditampilkan apa adanya.
+    """
+    last_by = {r["indicator"]: r for r in macro_calendar.last_releases()}
+    up_by = {r.indicator: r for r in macro_calendar.upcoming()}
+
+    rows = []
+    for ind in macro_calendar.RELEASE_IDS:
+        last = last_by.get(ind)
+        up = up_by.get(ind)
+        rows.append(
+            {
+                "IND": ind,
+                "EVENT": macro_calendar.EVENT_LABEL.get(ind, ind),
+                "RILIS TERAKHIR": last["release_date"].strftime("%a %d %b %Y")
+                if last and last["release_date"]
+                else "—",
+                "BERIKUTNYA (WIB)": up.release_utc.astimezone(WIB).strftime("%a %d %b %H:%M")
+                if up
+                else "belum dikonfirmasi FRED",
+                "IMP": macro_calendar.IMPACT.get(ind, ""),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def load_event_log(limit: int = 8) -> pd.DataFrame:
+    """Log hasil rilis nyata (data/live_events.jsonl) - feed belajar engine."""
+    f = Path(__file__).parent / "data" / "live_events.jsonl"
+    if not f.exists():
+        return pd.DataFrame()
+    rows = []
+    for line in f.read_text(encoding="utf-8").splitlines()[-limit:]:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        moves = (rec.get("moves") or {}).get("BTC/USD") or {}
+        rows.append(
+            {
+                "RILIS": rec.get("release_utc", "")[:10],
+                "EVENT": rec.get("label", rec.get("indicator", "")),
+                "ACTUAL": rec.get("actual"),
+                "Δ": rec.get("naive_delta"),
+                "VERDICT": rec.get("verdict", ""),
+                "BTC 15m %": moves.get("15m"),
+                "BTC 4h %": moves.get("4h"),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 @st.cache_data(ttl=3600, show_spinner="Menarik backtest nyata...")
@@ -525,10 +583,33 @@ tab1, tab2, tab3 = st.tabs(["CALENDAR / SIM", "BACKTEST", "SYSTEM"])
 # ---------------------------------------------------------------------------
 
 with tab1:
+    section("F0", "Real Release Calendar (FRED)", "tanggal publikasi asli - bukan simulasi")
+    real = load_real_releases()
+    st.dataframe(
+        real,
+        width="stretch",
+        hide_index=True,
+    )
+    st.caption(
+        "Sumber: FRED /release/dates (endpoint singular). FRED mengonfirmasi rilis "
+        "~2-4 minggu sebelum H-1 - kolom BERIKUTNYA berisi 'belum dikonfirmasi FRED' "
+        "sampai jadwal BLS/BEA dikunci. Telegram hanya mengirim HASIL rilis, jadwal "
+        "cukup di dashboard ini."
+    )
+
+    event_log = load_event_log()
+    if not event_log.empty:
+        section("F0b", "Event Log (feed belajar engine)", "data/live_events.jsonl")
+        st.dataframe(event_log, width="stretch", hide_index=True)
+        st.caption(
+            "Tiap rilis yang dikirim ke Telegram otomatis tercatat di sini: actual, "
+            "delta naive, verdict, dan reaksi BTC - bahan kalibrasi ulang engine."
+        )
+
     horizon = st.selectbox("HORIZON", [7, 14, 30], index=0, format_func=lambda d: f"{d} HARI")
     window = calendar[calendar["days_out"].between(0, horizon)]
 
-    section("F1", "Macro Calendar", f"{len(window)} event / {horizon} hari")
+    section("F1", "Sim Calendar (sandbox)", f"{len(window)} event / {horizon} hari — simulasi")
     if window.empty:
         st.markdown(
             '<div class="note">Tidak ada rilis high-impact pada horizon ini.</div>',
