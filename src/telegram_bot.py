@@ -402,3 +402,116 @@ def send_test_alert(dry_run: bool = False) -> DeliveryResult:
         "<i>Pesan ini tidak mengandung sinyal posisi.</i>"
     )
     return _send(text, dry_run=dry_run)
+
+
+# ---------------------------------------------------------------------------
+# Format 3: hasil rilis + reaksi pasar + edukasi (output "news" harian)
+# ---------------------------------------------------------------------------
+
+def format_news_result(
+    event_label: str,
+    release_date: str,
+    release_wib: str,
+    actual,
+    previous,
+    delta,
+    verdict_display: str,
+    rationale: str,
+    unit: str = "",
+    moves: Optional[dict] = None,
+    explain: Optional[str] = None,
+    hist_context: Optional[str] = None,
+) -> str:
+    """Menyusun teks hasil rilis: angka, reaksi pasar, dan penjelasan.
+
+    `delta` adalah selisih terhadap baseline naive (rilis sebelumnya), BUKAN
+    terhadap consensus pasar - consensus tidak tersedia di provider mana pun
+    dan label baseline selalu disebut agar tidak pernah dikira consensus.
+    """
+    def lev(v):
+        """Nilai level (actual/previous): tanpa tanda, presisi sesuai unit."""
+        if v is None:
+            return "<i>n/a</i>"
+        if unit == "K":
+            return f"<b>{v:,.0f}{unit}</b>"
+        return f"<b>{v:.2f}{unit}</b>"
+
+    def fmt(v):
+        if v is None:
+            return "<i>n/a</i>"
+        if unit == "K":
+            return f"<b>{v:+,.0f}{unit}</b>"
+        return f"<b>{v:+,.2f}{unit}</b>"
+
+    lines = [
+        f"\U0001f4f0 <b>[MACRO NEWS] {_esc(event_label)} — RILIS BARU</b>",
+        f"\U0001f5d3 Rilis {_esc(release_date)} · {_esc(release_wib)} WIB",
+        f"Actual: {lev(actual)} | Sebelumnya: {lev(previous)}",
+        f"Δ vs sebelumnya: {fmt(delta)} "
+        "<i>(baseline naive; consensus pasar tidak tersedia)</i>",
+        "",
+        f"\U0001f9ed <b>Verdict: {_esc(verdict_display)}</b>",
+        f"<i>{_esc(rationale)}</i>",
+    ]
+
+    if moves:
+        lines.append("")
+        lines.append("\U0001f4c8 <b>Reaksi pasar sejak rilis</b>")
+        for asset, hz in moves.items():
+            if not hz:
+                continue
+            parts = []
+            for tf in ("15m", "1h", "4h"):
+                v = hz.get(tf)
+                if v is None:
+                    parts.append(f"{tf} <i>n/a</i>")
+                else:
+                    parts.append(f"{tf} <b>{v:+.2f}%</b>")
+            lines.append(f"{_esc(asset)}: {' | '.join(parts)}")
+        if hist_context:
+            lines.append(f"<i>{_esc(hist_context)}</i>")
+
+    if explain:
+        lines += ["", "\U0001f4da <b>Apa ini & kenapa</b>", _esc(explain)]
+
+    return "\n".join(lines)
+
+
+def send_news_result(
+    event_label: str,
+    release_date: str,
+    release_wib: str,
+    actual,
+    previous,
+    delta,
+    verdict_display: str,
+    rationale: str,
+    unit: str = "",
+    moves: Optional[dict] = None,
+    explain: Optional[str] = None,
+    hist_context: Optional[str] = None,
+    dry_run: bool = False,
+) -> DeliveryResult:
+    """Mengirim hasil rilis ke Telegram. Tidak pernah melempar."""
+    try:
+        text = format_news_result(
+            event_label=event_label,
+            release_date=release_date,
+            release_wib=release_wib,
+            actual=actual,
+            previous=previous,
+            delta=delta,
+            verdict_display=verdict_display,
+            rationale=rationale,
+            unit=unit,
+            moves=moves,
+            explain=explain,
+            hist_context=hist_context,
+        )
+    except Exception as exc:  # format tidak boleh menjatuhkan pipeline
+        return DeliveryResult(
+            ok=False,
+            status="FORMAT_ERROR",
+            detail=f"{type(exc).__name__}: {exc}",
+        )
+    return _send(text, dry_run=dry_run)
