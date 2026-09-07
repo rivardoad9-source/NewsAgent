@@ -4,15 +4,60 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status Proyek
 
-**Pra-implementasi.** Direktori ini hanya berisi satu file — `macroai_agent_prd.md` — tanpa source code, tanpa dependency manifest, tanpa test, dan bukan git repository. Belum ada perintah build, lint, maupun test; semuanya baru ditetapkan bersamaan dengan scaffolding pertama, bukan diasumsikan lebih dulu.
+Implementasi berjalan. Mesin inti sudah ada dan terverifikasi terhadap API sungguhan;
+belum ada scheduler (hermes yang akan menanganinya) dan belum ada test suite.
 
-Baca `macroai_agent_prd.md` sebelum mengerjakan apa pun yang substansial. PRD itu satu-satunya spesifikasi yang ada, dan seluruh isi dokumen ini adalah ringkasannya — bukan penggantinya.
+Baca `macroai_agent_prd.md` untuk spesifikasi asli. Perlu diketahui: beberapa asumsi
+PRD sudah terbukti tidak berlaku, dan yang berlaku adalah temuan di bawah.
 
-File spesifikasi lain yang sudah ada:
-- `prompts/presenter_system_prompt.md` — **spec aktif (v4)** untuk lapisan LLM, tiga mode: Pre-Event Playbook (Format 1), Post-Event Signal Report (Format 2), dan Text Parser untuk FOMC statement/pidato (Format 3). Seluruh angka masuk sebagai slot input dari Rule Engine dan backtest engine; LLM dilarang menentukan Final Bias atau mengarang statistik. Ini yang menjaga NFR *Objectivity* tetap terpenuhi.
-- `prompts/analyst_system_prompt.md` — **superseded**, jangan dipakai. Versi awal yang menempatkan LLM sebagai pengambil keputusan bias.
+### Perintah
 
-Konsekuensi desain: seluruh field pada format output presenter adalah *slot data*, bukan hasil penalaran model. Kalau Rule Engine dan backtest engine belum mengisi slot itu, lapisan LLM tidak punya sesuatu untuk disajikan — jadi F3 dan F4 adalah prasyarat, bukan pekerjaan paralel.
+```
+streamlit run dashboard.py              # dashboard terminal (port 8501)
+python scripts/build_calibration.py     # bangun ulang data/calibration.json dari backtest
+python scripts/find_chat_id.py          # cari TELEGRAM_CHAT_ID
+```
+
+`.env` wajib diisi (lihat `.env.example`). **`load_dotenv()` hanya jalan sekali saat
+import**, jadi setiap perubahan `.env` menuntut restart Streamlit — ini pernah membuat
+FRED terbaca `NO KEY` padahal key-nya sudah ada.
+
+### Peta modul
+
+```
+src/rule_engine.py     verdict deterministik + INDICATOR_TABLE (sumber kebenaran arah)
+src/thesis.py          tesis dua horizon: pendek = surprise, panjang = tren FRED
+src/action.py          BUY / SELL / HOLD / PENDING per timeframe 15m, 1h, 4h
+src/backtest.py        backtest nyata: tanggal rilis FRED + candle 15m Binance
+src/telegram_bot.py    notifikasi, semua fungsi mengembalikan hasil, tidak melempar
+src/providers/         fmp, fred, binance
+dashboard.py           penyaji; TIDAK punya logika verdict sendiri
+data/calibration.json  statistik terukur yang dibaca action.py
+```
+
+### Temuan yang mengubah rencana PRD
+
+**Consensus tidak tersedia di mana pun.** `economic-calendar` FMP mengembalikan HTTP 402
+(di luar paket), dan FRED tidak menerbitkan forecast sama sekali. Tanpa consensus,
+Surprise Delta tidak dapat dihitung dari data live. Ini blocker utama Feature 1 dan 4.
+
+**Rantai fallback PRD keliru.** PRD menetapkan FMP -> TradingEconomics -> FRED untuk
+kalender. FRED bukan fallback yang sah untuk consensus karena memang tidak memilikinya.
+Untuk angka *aktual*, FRED justru sumber terbaik: segar dan dalam puluhan tahun,
+sementara `economic-indicators` FMP tertinggal ~276 hari.
+
+**Intraday hanya dari Binance.** Seluruh endpoint intraday FMP terkunci (402).
+`data-api.binance.vision` menyediakan candle 15m sejak 2019 tanpa API key.
+Catatan: `api.binance.com` tidak dapat dijangkau dari mesin ini.
+
+**Backtest 2019-2026 tidak menemukan edge arah.** Dari 24 kombinasi indikator x aset x
+timeframe, tidak satu pun berbeda signifikan dari 50% (alignment 45,8%-53,9%, semua
+|z| < 1,0). Yang terukur andal adalah *besar* pergerakan, bukan arahnya. Angka ini
+diukur terhadap forecast naif, bukan consensus pasar — satu-satunya variabel yang
+belum pernah diuji, dan berpotensi mengubah seluruh kesimpulan.
+
+Karena itu setiap sinyal BUY/SELL WAJIB membawa `measured_alignment` dan `edge_status`.
+Jangan pernah menampilkan arah tanpa angka itu.
 
 ## Apa yang Sedang Dibangun
 

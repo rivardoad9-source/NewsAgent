@@ -1,0 +1,253 @@
+{
+  "generated_at": "2026-09-07T06:36:01+00:00",
+  "period": "2019-01-01 s/d 2026-09-07",
+  "methodology": {
+    "surprise_baseline": "naive random walk (nilai rilis sebelumnya)",
+    "surprise_baseline_warning": "BUKAN consensus pasar. Consensus tidak tersedia di sumber mana pun yang dipakai proyek ini, sehingga edge yang diukur di sini mungkin berbeda jauh dari edge terhadap ekspektasi pasar sesungguhnya.",
+    "price_source": "Binance klines 15m (data-api.binance.vision)",
+    "price_basis": "close candle 15m tepat sebelum rilis",
+    "release_times": "08:30 ET (CPI/PPI/NFP/Unemployment), 14:00 ET (FOMC)"
+  },
+  "pairs": {
+    "CPI|BTC/USD": {
+      "n_releases": 97,
+      "period": "2019-01-11 s/d 2026-08-12",
+      "horizons": {
+        "15m": {
+          "alignment_rate": 48.3,
+          "n_directional": 89,
+          "avg_abs_move_pct": 0.793,
+          "std_error_pp": 5.3,
+          "z_score": -0.32,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "1h": {
+          "alignment_rate": 48.3,
+          "n_directional": 89,
+          "avg_abs_move_pct": 1.028,
+          "std_error_pp": 5.3,
+          "z_score": -0.32,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "4h": {
+          "alignment_rate": 53.9,
+          "n_directional": 89,
+          "avg_abs_move_pct": 1.585,
+          "std_error_pp": 5.3,
+          "z_score": 0.74,
+          "edge_status": "NO_EDGE_DETECTED"
+        }
+      }
+    },
+    "PPI|BTC/USD": {
+      "n_releases": 97,
+      "period": "2019-01-15 s/d 2026-08-13",
+      "horizons": {
+        "15m": {
+          "alignment_rate": 45.8,
+          "n_directional": 83,
+          "avg_abs_move_pct": 0.302,
+          "std_error_pp": 5.49,
+          "z_score": -0.77,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "1h": {
+          "alignment_rate": 47.0,
+          "n_directional": 83,
+          "avg_abs_move_pct": 0.513,
+          "std_error_pp": 5.49,
+          "z_score": -0.55,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "4h": {
+          "alignment_rate": 48.2,
+          "n_directional": 83,
+          "avg_abs_move_pct": 1.134,
+          "std_error_pp": 5.49,
+          "z_score": -0.33,
+          "edge_status": "NO_EDGE_DETECTED"
+        }
+      }
+    },
+    "NFP|BTC/USD": {
+      "n_releases": 94,
+      "period": "2019-01-04 s/d 2026-09-04",
+      "horizons": {
+        "15m": {
+          "alignment_rate": 47.0,
+          "n_directional": 83,
+          "avg_abs_move_pct": 0.509,
+          "std_error_pp": 5.49,
+          "z_score": -0.55,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "1h": {
+          "alignment_rate": 47.0,
+          "n_directional": 83,
+          "avg_abs_move_pct": 0.661,
+          "std_error_pp": 5.49,
+          "z_score": -0.55,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "4h": {
+          "alignment_rate": 51.8,
+          "n_directional": 83,
+          "avg_abs_move_pct": 1.132,
+          "std_error_pp": 5.49,
+          "z_score": 0.33,
+          "edge_status": "NO_EDGE_DETECTED"
+        }
+      }
+    },
+    "UNEMPLOYMENT|BTC/USD": {
+      "n_releases": 94,
+      "period": "2019-01-04 s/d 2026-09-04",
+      "horizons": {
+        "15m": {
+          "alignment_rate": 50.0,
+          "n_directional": 32,
+          "avg_abs_move_pct": 0.509,
+          "std_error_pp": 8.84,
+          "z_score": 0.0,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "1h": {
+          "alignment_rate": 40.6,
+          "n_directional": 32,
+          "avg_abs_move_pct": 0.661,
+          "std_error_pp": 8.84,
+          "z_score": -1.06,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "4h": {
+          "alignment_rate": 46.9,
+          "n_directional": 32,
+          "avg_abs_move_pct": 1.132,
+          "std_error_pp": 8.84,
+          "z_score": -0.35,
+          "edge_status": "NO_EDGE_DETECTED"
+        }
+      }
+    },
+    "CPI|ETH/USD": {
+      "n_releases": 97,
+      "period": "2019-01-11 s/d 2026-08-12",
+      "horizons": {
+        "15m": {
+          "alignment_rate": 47.2,
+          "n_directional": 89,
+          "avg_abs_move_pct": 1.019,
+          "std_error_pp": 5.3,
+          "z_score": -0.53,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "1h": {
+          "alignment_rate": 46.1,
+          "n_directional": 89,
+          "avg_abs_move_pct": 1.361,
+          "std_error_pp": 5.3,
+          "z_score": -0.74,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "4h": {
+          "alignment_rate": 52.8,
+          "n_directional": 89,
+          "avg_abs_move_pct": 2.087,
+          "std_error_pp": 5.3,
+          "z_score": 0.53,
+          "edge_status": "NO_EDGE_DETECTED"
+        }
+      }
+    },
+    "PPI|ETH/USD": {
+      "n_releases": 97,
+      "period": "2019-01-15 s/d 2026-08-13",
+      "horizons": {
+        "15m": {
+          "alignment_rate": 47.0,
+          "n_directional": 83,
+          "avg_abs_move_pct": 0.437,
+          "std_error_pp": 5.49,
+          "z_score": -0.55,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "1h": {
+          "alignment_rate": 43.4,
+          "n_directional": 83,
+          "avg_abs_move_pct": 0.695,
+          "std_error_pp": 5.49,
+          "z_score": -1.2,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "4h": {
+          "alignment_rate": 48.2,
+          "n_directional": 83,
+          "avg_abs_move_pct": 1.446,
+          "std_error_pp": 5.49,
+          "z_score": -0.33,
+          "edge_status": "NO_EDGE_DETECTED"
+        }
+      }
+    },
+    "NFP|ETH/USD": {
+      "n_releases": 94,
+      "period": "2019-01-04 s/d 2026-09-04",
+      "horizons": {
+        "15m": {
+          "alignment_rate": 51.8,
+          "n_directional": 83,
+          "avg_abs_move_pct": 0.59,
+          "std_error_pp": 5.49,
+          "z_score": 0.33,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "1h": {
+          "alignment_rate": 50.6,
+          "n_directional": 83,
+          "avg_abs_move_pct": 0.801,
+          "std_error_pp": 5.49,
+          "z_score": 0.11,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "4h": {
+          "alignment_rate": 48.2,
+          "n_directional": 83,
+          "avg_abs_move_pct": 1.635,
+          "std_error_pp": 5.49,
+          "z_score": -0.33,
+          "edge_status": "NO_EDGE_DETECTED"
+        }
+      }
+    },
+    "UNEMPLOYMENT|ETH/USD": {
+      "n_releases": 94,
+      "period": "2019-01-04 s/d 2026-09-04",
+      "horizons": {
+        "15m": {
+          "alignment_rate": 46.9,
+          "n_directional": 32,
+          "avg_abs_move_pct": 0.59,
+          "std_error_pp": 8.84,
+          "z_score": -0.35,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "1h": {
+          "alignment_rate": 46.9,
+          "n_directional": 32,
+          "avg_abs_move_pct": 0.801,
+          "std_error_pp": 8.84,
+          "z_score": -0.35,
+          "edge_status": "NO_EDGE_DETECTED"
+        },
+        "4h": {
+          "alignment_rate": 46.9,
+          "n_directional": 32,
+          "avg_abs_move_pct": 1.635,
+          "std_error_pp": 8.84,
+          "z_score": -0.35,
+          "edge_status": "NO_EDGE_DETECTED"
+        }
+      }
+    }
+  }
+}
