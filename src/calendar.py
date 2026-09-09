@@ -50,6 +50,48 @@ RELEASE_TIME_ET: dict[str, time] = {
     "GDP": time(8, 30),
 }
 
+# Jadwal rilis RESMI BLS 2026 (sumber: https://www.bls.gov/schedule/ — BLS
+# menerbitkan jadwal SETAHUN PENUH di muka, diperbarui bila perlu).
+#
+# MENGAPA INI ADA: FRED `/release/dates` ternyata HANYA memuat rilis yang SUDAH
+# TERJADI (database historis) — terbukti 9 Sep 2026: PPI 10 Sep & CPI 11 Sep
+# (data Agustus) sudah diumumkan BLS berhari-hari sebelumnya tetapi TIDAK muncul
+# di FRED. `upcoming()` yang hanya mengandalkan FRED karena itu SELALU kosong
+# menjelang rilis (false negative H-1 yang berbahaya). Jadwal BLS = sumber
+# kebenaran forward-looking; FRED hanya cadangan/verifikasi historis.
+#
+# NOTE: perbarui setiap awal tahun dari bls.gov/schedule (open work: auto-fetch).
+BLS_SCHEDULE: dict[str, list[str]] = {
+    # CPI 2026 (data -> rilis): Jan 13, Feb 13, Mar 11, Apr 10, May 12, Jun 10,
+    # Jul 14, Aug 12, Sep 11, Oct 14, Nov 10, Dec 10
+    "CPI": [
+        "2026-01-13", "2026-02-13", "2026-03-11", "2026-04-10",
+        "2026-05-12", "2026-06-10", "2026-07-14", "2026-08-12",
+        "2026-09-11", "2026-10-14", "2026-11-10", "2026-12-10",
+    ],
+    # PPI 2026: Jun 11, Jul 15, Aug 13, Sep 10, Oct 15, Nov 13, Dec 15
+    "PPI": [
+        "2026-06-11", "2026-07-15", "2026-08-13", "2026-09-10",
+        "2026-10-15", "2026-11-13", "2026-12-15",
+    ],
+    # Employment Situation (NFP + Unemployment, rilis yang sama): Jumat pertama.
+    # Jan 9, Feb 6, Mar 6, Apr 3, May 8, Jun 5, Jul 2, Aug 7, Sep 4,
+    # Oct 2, Nov 6, Dec 4
+    "NFP": [
+        "2026-01-09", "2026-02-06", "2026-03-06", "2026-04-03",
+        "2026-05-08", "2026-06-05", "2026-07-02", "2026-08-07",
+        "2026-09-04", "2026-10-02", "2026-11-06", "2026-12-04",
+    ],
+    "UNEMPLOYMENT": [
+        "2026-01-09", "2026-02-06", "2026-03-06", "2026-04-03",
+        "2026-05-08", "2026-06-05", "2026-07-02", "2026-08-07",
+        "2026-09-04", "2026-10-02", "2026-11-06", "2026-12-04",
+    ],
+    # GDP: jadwal BEA (bukan BLS) — rilis advance/preliminary/final per kuartal.
+    # Tidak diisi di sini; GDP tidak di-auto-monitor (lihat CLAUDE.md).
+    "GDP": [],
+}
+
 EVENT_LABEL: dict[str, str] = {
     "CPI": "US CPI YoY",
     "PPI": "US PPI YoY",
@@ -159,27 +201,43 @@ def last_releases(now: Optional[datetime] = None) -> list[dict]:
 
 
 def upcoming(horizon_days: int = 90, now: Optional[datetime] = None) -> list[ScheduledRelease]:
-    """Rilis masa depan yang SUDAH dikonfirmasi FRED (sering kosong - wajar).
+    """Rilis masa depan yang SUDAH dikonfirmasi (sering kosong - wajar).
 
-    FRED mengonfirmasi ~2-4 minggu sebelum hari-H. Dashboard menampilkan hasil
-    fungsi ini apa adanya plus catatan "belum dikonfirmasi" untuk sisanya.
+    Sumber GANDA (lihat BLS_SCHEDULE di atas untuk konteks kenapa):
+    1. `BLS_SCHEDULE` — jadwal resmi BLS, diterbitkan setahun penuh di muka.
+       Ini sumber UTAMA untuk rilis mendatang (CPI/PPI/NFP/UNEMPLOYMENT).
+    2. `_release_dates()` (FRED) — fallback: FRED hanya memuat rilis yang SUDAH
+       TERJADI, jadi praktis tidak pernah menyumbang untuk masa depan, tapi
+       dipertahankan sebagai jaring pengaman bila jadwal BLS belum diisi
+       (mis. GDP, atau tahun berjalan yang belum di-update).
     """
     now = now or datetime.now(timezone.utc)
     end = now.date() + timedelta(days=horizon_days)
     out: list[ScheduledRelease] = []
     for indicator in RELEASE_IDS:
-        dates = _release_dates(indicator, now.date(), end)
-        for rd in dates:
-            if rd >= now.date():
-                out.append(
-                    ScheduledRelease(
-                        indicator=indicator,
-                        release_date=rd,
-                        release_utc=_to_utc(rd, indicator),
-                        confirmed=True,
-                    )
-                )
-                break  # hanya rilis terdekat per indikator
+        candidates: set[date] = set()
+        # Sumber 1: jadwal resmi BLS (forward-looking).
+        for iso in BLS_SCHEDULE.get(indicator, []):
+            try:
+                candidates.add(date.fromisoformat(iso))
+            except ValueError:
+                continue
+        # Sumber 2: FRED (historis — jarang menyumbang untuk masa depan).
+        candidates.update(_release_dates(indicator, now.date(), end))
+
+        future = sorted(rd for rd in candidates if rd >= now.date() and rd <= end)
+        if not future:
+            continue
+        # Hanya rilis TERDEKAT per indikator (perilaku lama dipertahankan).
+        rd = future[0]
+        out.append(
+            ScheduledRelease(
+                indicator=indicator,
+                release_date=rd,
+                release_utc=_to_utc(rd, indicator),
+                confirmed=True,  # jadwal BLS = resmi; FRED = sudah terjadi
+            )
+        )
     return sorted(out, key=lambda r: r.release_utc)
 
 
