@@ -48,6 +48,7 @@ RELEASE_TIME_ET: dict[str, time] = {
     "NFP": time(8, 30),
     "UNEMPLOYMENT": time(8, 30),
     "GDP": time(8, 30),
+    "FOMC": time(14, 0),  # statement 14:00 ET (press conference 14:30)
 }
 
 # Jadwal rilis RESMI BLS 2026 (sumber: https://www.bls.gov/schedule/ — BLS
@@ -87,10 +88,47 @@ BLS_SCHEDULE: dict[str, list[str]] = {
         "2026-05-08", "2026-06-05", "2026-07-02", "2026-08-07",
         "2026-09-04", "2026-10-02", "2026-11-06", "2026-12-04",
     ],
-    # GDP: jadwal BEA (bukan BLS) — rilis advance/preliminary/final per kuartal.
-    # Tidak diisi di sini; GDP tidak di-auto-monitor (lihat CLAUDE.md).
-    "GDP": [],
+    # GDP: jadwal BEA (bukan BLS) — advance/second/third estimate per kuartal.
+    # Sumber: https://www.bea.gov/news/schedule (2026; Q4'25 sempat di-reschedule
+    # dari 29 Jan ke 20 Feb krn ketersediaan data — BEA mengumumkan per kuartal).
+    # Catatan: yg paling market-moving = ADVANCE estimate (30 hari setelah kuartal
+    # berakhir); second/third = revisi, dampak lebih kecil.
+    "GDP": [
+        "2026-02-20",  # Q4'25 Advance (rescheduled)
+        "2026-03-13",  # Q4'25 Second
+        "2026-04-09",  # Q4'25 Third
+        "2026-04-30",  # Q1'26 Advance
+        "2026-05-28",  # Q1'26 Second
+        "2026-06-25",  # Q1'26 Third
+        "2026-07-30",  # Q2'26 Advance
+        "2026-08-26",  # Q2'26 Second
+        "2026-09-30",  # Q2'26 Third
+        "2026-10-29",  # Q3'26 Advance  <-- market-moving
+        "2026-11-25",  # Q3'26 Second
+        "2026-12-23",  # Q3'26 Third
+    ],
 }
+
+# Jadwal FOMC 2026 (sumber: https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm).
+# Tanggal di sini = hari KEPUTUSAN (hari ke-2 meeting), statement 14:00 ET,
+# press conference 14:30 ET. Meeting yg ada (*) menyertakan SEP + dot plot:
+# Mar 17-18, Jun 16-17, Sep 15-16, Dec 8-9. FOMC TIDAK ada di FRED (bukan
+# release-with-data) → murni kalender, tidak di-auto-monitor tick.py.
+FOMC_SCHEDULE: list[str] = [
+    "2026-01-28",  # Jan 27-28
+    "2026-03-18",  # Mar 17-18  (SEP)
+    "2026-04-29",  # Apr 28-29
+    "2026-06-17",  # Jun 16-17  (SEP)
+    "2026-07-29",  # Jul 28-29
+    "2026-09-16",  # Sep 15-16  (SEP)  <-- berikutnya
+    "2026-10-28",  # Oct 27-28
+    "2026-12-09",  # Dec 8-9    (SEP)
+]
+
+# Indikator kalender yang TIDAK punya FRED release id (tidak di auto-monitor
+# tick.py, murni jadwal). Dipakai upcoming() untuk tahu kandidat mana yang
+# dilayani oleh FOMC_SCHEDULE.
+FOMC_INDICATOR_KEYS: tuple[str, ...] = ("FOMC",)
 
 EVENT_LABEL: dict[str, str] = {
     "CPI": "US CPI YoY",
@@ -98,6 +136,7 @@ EVENT_LABEL: dict[str, str] = {
     "NFP": "US Non-Farm Payrolls",
     "UNEMPLOYMENT": "US Unemployment Rate",
     "GDP": "US GDP Growth",
+    "FOMC": "FOMC Rate Decision",
 }
 
 IMPACT: dict[str, str] = {
@@ -106,6 +145,7 @@ IMPACT: dict[str, str] = {
     "NFP": "HIGH",
     "UNEMPLOYMENT": "HIGH",
     "GDP": "MED",
+    "FOMC": "HIGH",
 }
 
 # Seri FRED yang dipakai untuk memverifikasi "data baru sudah keluar".
@@ -214,14 +254,25 @@ def upcoming(horizon_days: int = 90, now: Optional[datetime] = None) -> list[Sch
     now = now or datetime.now(timezone.utc)
     end = now.date() + timedelta(days=horizon_days)
     out: list[ScheduledRelease] = []
-    for indicator in RELEASE_IDS:
+
+    # Gabungkan semua indikator: RELEASE_IDS (BLS+BEA via BLS_SCHEDULE, punya FRED
+    # id) + FOMC (murni kalender Fed, tanpa FRED id).
+    all_indicators = set(RELEASE_IDS) | set(FOMC_INDICATOR_KEYS)
+
+    for indicator in sorted(all_indicators):
         candidates: set[date] = set()
-        # Sumber 1: jadwal resmi BLS (forward-looking).
+        # Sumber 1: jadwal resmi (BLS/BEA + FOMC), forward-looking.
         for iso in BLS_SCHEDULE.get(indicator, []):
             try:
                 candidates.add(date.fromisoformat(iso))
             except ValueError:
                 continue
+        if indicator == "FOMC":
+            for iso in FOMC_SCHEDULE:
+                try:
+                    candidates.add(date.fromisoformat(iso))
+                except ValueError:
+                    continue
         # Sumber 2: FRED (historis — jarang menyumbang untuk masa depan).
         candidates.update(_release_dates(indicator, now.date(), end))
 
@@ -235,7 +286,7 @@ def upcoming(horizon_days: int = 90, now: Optional[datetime] = None) -> list[Sch
                 indicator=indicator,
                 release_date=rd,
                 release_utc=_to_utc(rd, indicator),
-                confirmed=True,  # jadwal BLS = resmi; FRED = sudah terjadi
+                confirmed=True,  # jadwal resmi (BLS/BEA/Fed); FRED = sudah terjadi
             )
         )
     return sorted(out, key=lambda r: r.release_utc)
