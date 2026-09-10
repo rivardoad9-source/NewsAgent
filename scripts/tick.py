@@ -42,6 +42,7 @@ load_dotenv()
 
 from src import calendar  # noqa: E402
 from src import telegram_bot  # noqa: E402
+from src import bls_fast_release  # noqa: E402
 from src.action import get_stats  # noqa: E402
 from src.providers import binance, fred  # noqa: E402
 from src.rule_engine import INDICATOR_TABLE, VerdictResult, get_verdict  # noqa: E402
@@ -135,6 +136,29 @@ def append_event(record: dict) -> None:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _event_already_recorded(indicator: str, obs_date: str) -> bool:
+    """Apakah (indicator, obs_date) sudah tercatat di feed belajar?
+
+    Dedupe jalur cepat (API BLS) vs jalur FRED: satu rilis = satu baris + satu alert.
+    Kalau berkasnya tidak ada, jawabannya "belum" — itu kondisi normal di instalasi baru.
+    """
+    try:
+        with EVENTS_FILE.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if record.get("indicator") == indicator and record.get("obs_date") == obs_date:
+                    return True
+    except FileNotFoundError:
+        return False
+    return False
+
+
 def explain_text(indicator: str, verdict_display: str, delta, actual, previous) -> str:
     spec = INDICATOR_TABLE.get(indicator)
     parts = [WHAT_IS.get(indicator, "")]
@@ -197,6 +221,18 @@ def process_indicator(indicator: str, state: dict, dry_run: bool, force: bool = 
     if obs_str <= last_obs and not force:
         return {"indicator": indicator, "action": "idle", "reason": f"obs {obs_str} == {last_obs}"}
 
+    # Jalur cepat (API BLS) bisa sudah mengirim & mencatat rilis ini berjam-jam sebelum
+    # FRED sempat memuatnya. Jangan kirim dua kali untuk satu rilis: sinkronkan penanda
+    # state supaya tick berikutnya langsung "idle".
+    if not force and _event_already_recorded(indicator, obs_str):
+        state.setdefault("last_obs", {})[indicator] = obs_str
+        save_state(state)
+        return {
+            "indicator": indicator,
+            "action": "already-recorded",
+            "reason": f"obs {obs_str} sudah dikirim jalur cepat BLS",
+        }
+
     delta = float(actual) - float(previous)
     verdict: VerdictResult = get_verdict(indicator, delta)
     display = verdict.display_bias if verdict.verdict is not None else "NO_VERDICT"
@@ -255,6 +291,106 @@ def process_indicator(indicator: str, state: dict, dry_run: bool, force: bool = 
     return {"indicator": indicator, "action": "sent" if result.ok else "send-failed", "ok": result.ok, "detail": result.detail}
 
 
+def process_fast_release(indicator: str, state: dict, dry_run: bool) -> dict:
+    """Kirim hasil rilis dari API resmi BLS begitu angkanya publik.
+
+    Dipanggil SEBELUM jalur FRED. Rilis BLS 08:30 ET = 19:30/20:30 WIB, tick cron jalan
+    tiap 5 menit, jadi operator dapat hasilnya < 5 menit setelah rilis — sementara FRED
+    pada rilis PPI 10 Sep 2026 masih memuat data Juli 46 menit setelahnya.
+
+    Bentuk alert, penjelasan, dedupe, dan pencatatan feed belajar sengaja sama dengan
+    `process_indicator`; yang berbeda hanya sumber angkanya.
+    """
+    try:
+        hit = bls_fast_release.detect_fast_release(indicator, state)
+    except bls_fast_release.BlsFetchError as exc:
+        return {"indicator": indicator, "action": "skip", "reason": f"BLS: {exc}"}
+
+    if hit is None:
+        return {"indicator": indicator, "action": "idle", "reason": "belum ada periode baru di BLS"}
+
+    headline = hit["headline"]
+    spec = INDICATOR_TABLE.get(indicator)
+    label = spec.label if spec else hit["label"]
+    release_utc = hit["release_utc"]
+    rel_iso = hit["release_date"].isoformat()
+    wib_hhmm = release_utc.astimezone(WIB).strftime("%H:%M")
+
+    delta = float(headline["delta"])
+    verdict: VerdictResult = get_verdict(indicator, delta)
+    display = verdict.display_bias if verdict.verdict is not None else "NO_VERDICT"
+
+    moves = {}
+    for asset in ASSETS:
+        moves[asset] = binance.returns_after(asset, release_utc)
+
+    explain = explain_text(
+        indicator, display, delta, headline["actual"], headline["previous"]
+    )
+    if headline.get("mom") is not None:
+        # Angka yang dibandingkan pasar untuk CPI/PPI adalah MoM; verdict dipakai YoY
+        # (sesuai jalur FRED), jadi MoM dilaporkan di teks supaya tidak hilang.
+        explain = f"MoM (yang dibandingkan pasar): {headline['mom']:+.2f}%. " + explain
+    explain += (
+        f" Sumber angka: API resmi BLS (seri {hit['series']}), dibaca langsung saat rilis —"
+        " jalur cepat, jadi tidak menunggu FRED."
+    )
+
+    result = telegram_bot.send_news_result(
+        event_label=label,
+        release_date=rel_iso,
+        release_wib=wib_hhmm,
+        actual=float(headline["actual"]),
+        previous=float(headline["previous"]),
+        delta=delta,
+        verdict_display=display,
+        rationale=verdict.rationale or "",
+        unit=hit["unit"],
+        moves=moves,
+        explain=explain,
+        hist_context=hist_context(indicator),
+        dry_run=dry_run,
+    )
+
+    if dry_run:
+        print(result.message_preview if result.message_preview else "(tidak ada preview)")
+        return {"indicator": indicator, "action": "dry-run", "ok": result.ok, "detail": result.detail}
+
+    if result.ok:
+        append_event(
+            {
+                "ts_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "indicator": indicator,
+                "label": label,
+                "obs_date": f"{headline['period']}-01",
+                "release_utc": release_utc.isoformat(timespec="minutes"),
+                "actual": headline["actual"],
+                "previous": headline["previous"],
+                "naive_delta": round(delta, 4),
+                "verdict": display,
+                "rationale": verdict.rationale,
+                "moves": moves,
+                "baseline": "naive-previous",
+                # Penanda sumber: baris ini datang dari jalur cepat, bukan FRED, supaya
+                # recalibration bisa memisahkan keduanya.
+                "source": "bls-api-fast",
+                "series": hit["series"],
+                "mom": headline.get("mom"),
+            }
+        )
+        state.setdefault("fast_sent", {})[indicator] = headline["period"]
+        state.setdefault("last_obs", {})[indicator] = f"{headline['period']}-01"
+        state.setdefault("last_release", {})[indicator] = rel_iso
+        save_state(state)
+
+    return {
+        "indicator": indicator,
+        "action": "sent" if result.ok else "send-failed",
+        "ok": result.ok,
+        "detail": result.detail,
+    }
+
+
 def main() -> int:
     args = sys.argv[1:]
     force = None
@@ -271,6 +407,7 @@ def main() -> int:
             rd = row["release_date"]
             print(f"{row['indicator']:12} rilis terakhir: {rd.isoformat() if rd else 'n/a'}")
         print(f"state: {json.dumps(state.get('last_obs', {}))}")
+        print(f"fast_sent: {json.dumps(state.get('fast_sent', {}))}")
         return 0
 
     if seed:
@@ -284,6 +421,24 @@ def main() -> int:
 
     indicators = [force] if force else MONITORED
     failures = 0
+
+    # JALUR CEPAT DULU. Angka resmi BLS sudah publik saat rilis (dan API-nya sudah memuat
+    # periode baru pada tick berikutnya), sementara FRED bisa telat berjam-jam. Dedupe di
+    # `process_indicator` yang mencegah alert kedua saat FRED menyusul.
+    for ind in indicators:
+        out = process_fast_release(ind, state, dry_run)
+        if out["action"] == "skip":
+            # API BLS tidak melayani seri ini — bukan kegagalan kirim, jalur FRED masih
+            # jalan, jadi jangan bikin cron alert. Cukup catat di stderr.
+            print(f"[tick] fast {ind}: {out.get('reason')}", file=sys.stderr)
+            continue
+        if out["action"] in ("sent", "send-failed") and not out.get("ok"):
+            failures += 1
+            print(f"[tick] fast {ind}: GAGAL kirim — {out.get('detail')}", file=sys.stderr)
+
+    if "--fast" in args:
+        return 1 if failures else 0
+
     for ind in indicators:
         out = process_indicator(ind, state, dry_run, force=bool(force))
         if out["action"] in ("sent", "send-failed"):
