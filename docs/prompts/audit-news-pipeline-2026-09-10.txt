@@ -1,0 +1,93 @@
+NewsAgent macro-alert pipeline — FULL audit, report only. No code changes, no commits, no deploys,
+no cron edits. Your only write is the audit document itself.
+
+Repo: ~/NewsAgent (main, at/after 25c13bb). Run `git log --oneline -8` and record the exact SHA.
+Read first: CLAUDE.md, macroai_agent_prd.md, scripts/tick.py, src/bls_fast_release.py,
+src/calendar.py, src/rule_engine.py, tests/, and the committed data/ (live_state.json,
+live_events.jsonl, calibration.json).
+
+CONTEXT — what this system does
+- A cron runs `scripts/tick.py` every 5 minutes (was every 15). For each tracked indicator
+  (CPI, PPI, NFP/jobs, unemployment, GDP...) it looks for a NEW observation and, when found,
+  computes actual vs previous, reads the market reaction, produces a deterministic verdict
+  (rule engine — explicitly NO LLM in this path) and SENDS a Telegram alert.
+- Two detection paths now: the FRED path (historical-only, lags 1-3h) and, since 10 Sep 2026,
+  a FAST path that reads the official BLS API v1 (keyless, fresh at release time) and fires
+  within ~5 minutes. The fast path runs FIRST and the FRED path must then dedupe against it.
+- Precedent for why this audit exists: on 10 Sep the PPI alert reached the operator ~1 h late
+  because FRED had not published, and it had to be sent by hand. The fast path was built to remove
+  that dependency. It has since fired once, live, successfully.
+
+DELIVERABLE — exactly one document: docs/audits/2026-09-10-news-pipeline-audit.md (create docs/audits/).
+One-screen summary at the top: findings ranked by user-visible impact, first three fixes.
+No code edits. No fix branches.
+
+SCOPE, in priority order
+
+1. FALSE ALERTS (worst case: a wrong number reaches the operator as fact).
+   src/bls_fast_release.py + src/rule_engine.py + src/thesis.py.
+   (a) Series selection: are the series IDs the OFFICIAL headline series (e.g. WPSFD4 for PPI final
+       demand, the right CPI/NFP/unemployment series)? Any indicator mapped to a proxy or a
+       non-headline series? (b) MoM/YoY/pp arithmetic — verify against the worked example in the
+       code/tests and against a real BLS value you can fetch (api.bls.gov is keyless and reachable).
+       (c) REVISIONS: BLS revises the prior month; if `previous` changes, the computed delta silently
+       changes too. How is that handled/shown? (d) Seasonally adjusted vs not — is the same basis
+       used for actual and previous? (e) What bounds/exceptions would make a garbage number get sent?
+2. MISSED ALERTS AND SILENT FAILURE. Enumerate every path where a real release produces NO alert and
+   nothing tells anyone: detection misses, calendar/schedule stale, exception swallowed, send fails,
+   cron stopped entirely. For each: is there a watchdog or a heartbeat? (FlowMetrix lesson: the
+   highest-value watchdog alerts on a *status change*, not every tick.) Specifically check whether
+   `latest_scheduled_date()` over the forward schedule can return nothing/None at the exact moment
+   it is needed, and what happens then.
+3. DUPLICATE / DOUBLE-SEND. Fast path fires, then the FRED path publishes the same observation hours
+   later. Show the dedupe key (indicator + obs_date?) and every way it can fail: obs_date differing
+   by a day between BLS and FRED, state file lost/corrupt/rolled back, the same indicator tracked
+   twice, a manual send by the operator followed by an automatic one. Does the message the operator
+   receives make it unambiguous whether a second message is a duplicate or a new release?
+4. SEND / STATE CONTRACT (critical, this is where money-adjacent systems usually break).
+   The sender lives OUTSIDE this repo: ~/.hermes/scripts/news_send.py, invoked by the pipeline.
+   Audit the contract as used: argv/file interface, exit codes, retries, timeouts.
+   **The key question: is the "already sent" state persisted BEFORE or AFTER the send is confirmed
+   successful?** If a failed send still marks the event as sent, a real alert is silently lost
+   forever. Also: can a send go to the WRONG chat (chat id hardcoded/derived/config fallback)?
+   And is live_state.json written atomically? (it currently uses a plain write_text — a crash or a
+   concurrent tick mid-write can corrupt it, which then interacts with scope 2 and 3.)
+5. TIME / TIMEZONE / DST. Release moments, WIB vs ET conversions, the forward schedule as the source
+   of truth, and what happens across the US DST transition (Nov 2026) and on a schedule that BLS/BEA
+   changes. Show the fail direction when the schedule is missing, stale or contradictory.
+6. MESSAGE HONESTY AND CALIBRATION. The alert text must not overclaim: check the verdict vocabulary,
+   the education line, and the calibration note (the backtest is currently NO_EDGE_DETECTED /
+   low-n). Verify nothing in the rendered message can present an uncalibrated probability as a
+   forecast, and that "unavailable"/incomplete data is shown as such, never silently defaulted.
+7. COST AND RATE LIMITS. Confirm the tick path contains no LLM call on a normal run and quantify what
+   a 5-minute cadence costs in HTTP requests/day; check the BLS and FRED call budget, any caching,
+   and whether a bad day could trip a provider rate limit. (Operator is explicitly cost-sensitive;
+   the schedule was just changed from 15 to 5 minutes, so state the real marginal cost.)
+8. TEST COVERAGE GAPS. For each finding: would an existing test have caught it, and what is the exact
+   missing assertion? Then list the 5 highest-value tests that do not exist yet — especially offline
+   tests for the fast path (no network), the dedupe matrix, and the send-failure state semantics.
+9. OPERATOR RUNBOOK. From the code, write the exact steps to (a) verify the pipeline is alive,
+   (b) tell whether the fast path or the FRED path produced a given alert, (c) re-send a missed
+   alert safely without creating a duplicate, (d) recover from a corrupt state file.
+
+EVIDENCE RULES
+- Ground every claim in code, the committed data files, git history, or a live keyless API call you
+  actually made. Comments and the PRD are NOT evidence — verify against the implementation.
+- You do NOT have this server's pm2 logs, cron config or shell access. For anything needing live
+  state, write a "REQUESTED EVIDENCE" entry: the exact command, what to look for, expected output.
+- No speculation dressed as a finding; no fabricated numbers; mark unverifiable items "UNVERIFIED".
+- Reproduce what you can locally (the venv is .venv; `python -m pytest tests/ -q`; note that
+  test_bls_fast_release.py is offline by design) and record the result.
+- For every finding, list the exact command you ran so a reviewer can re-run it.
+
+RULES (non-negotiable)
+- READ-ONLY apart from the audit document. No cron edits, no .env edits, no sending any Telegram
+  message, no refactor proposals. Minimal targeted fixes only, and you are not applying them.
+- Do not loosen or tighten a threshold/schedule to make a finding disappear; report it instead.
+
+DONE WHEN
+- docs/audits/2026-09-10-news-pipeline-audit.md exists, names the audited SHA, and every finding has
+  severity (critical/major/minor) + file:line + a concrete scenario + the evidence you observed +
+  why the tests missed it + a minimal fix sketch; the summary names the top findings and the first
+  three fixes; REQUESTED EVIDENCE lists what the operator must run; the runbook (scope 9) is included.
+- Commit ONLY that document as `docs(audit): news pipeline audit <sha>` and push to main.
