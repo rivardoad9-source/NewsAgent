@@ -16,7 +16,19 @@ PRD sudah terbukti tidak berlaku, dan yang berlaku adalah temuan di bawah.
 streamlit run dashboard.py              # dashboard terminal (port 8501)
 python scripts/build_calibration.py     # bangun ulang data/calibration.json dari backtest
 python scripts/find_chat_id.py          # cari TELEGRAM_CHAT_ID
+python scripts/fetch_schedule.py        # jadwal resmi BLS (ICS) + FOMC -> data/schedule.json + alarm cakupan (exit 2/3)
+python scripts/backfill_moves.py        # tambal horizon 1h/4h yang null di data/live_events.jsonl (--dry-run)
+python scripts/build_calibration.py --live-only   # hit-rate feed live vs backtest -> data/calibration_live.json
+python -m unittest discover -s tests -v # test offline (fixture), tanpa jaringan
 ```
+
+**Jadwal rilis: file dulu, konstanta cadangan.** `src/calendar.py` memakai `data/schedule.json`
+hanya kalau lolos `src.schedule.validate_schedule` (dicek ulang tiap dimuat); selain itu jatuh
+ke `BLS_SCHEDULE` / `FOMC_SCHEDULE`. GDP (jadwal BEA) tidak di-fetch dan selalu dari konstanta.
+Alarm cakupan (`data/schedule_status.json`) menyala bila tanggal terakhir sebuah indikator
+high-impact < 60 hari lagi, atau akhir tahun tinggal ≤ 120 hari dan tahun depan masih kosong.
+www.bls.gov menolak UA browser palsu (403) tetapi melayani UA yang mengidentifikasi diri —
+jangan ganti `USER_AGENT` di `scripts/fetch_schedule.py` jadi UA browser.
 
 `.env` wajib diisi (lihat `.env.example`). **`load_dotenv()` hanya jalan sekali saat
 import**, jadi setiap perubahan `.env` menuntut restart Streamlit — ini pernah membuat

@@ -17,3 +17,9 @@ venv/
 # Data hasil fetch (artefak, bukan sumber)
 data/cache/
 data/live_state.json
+# Ditulis scripts/fetch_schedule.py oleh cron; divalidasi ulang saat dimuat (src/calendar.py)
+data/schedule.json
+data/schedule_status.json
+data/*.tmp
+# Cadangan sebelum scripts/backfill_moves.py menulis ulang live_events.jsonl
+data/*.bak
