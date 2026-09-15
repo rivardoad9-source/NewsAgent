@@ -280,7 +280,8 @@ def detect_fast_release(
 
         def _default_resolver(ind: str, moment: datetime) -> Optional[date]:
             today = moment.astimezone(timezone.utc).date()
-            scheduled = latest_scheduled_date(_calendar.BLS_SCHEDULE.get(ind, []), today)
+            # Jadwal EFEKTIF (data/schedule.json kalau valid), sama dengan yang dipakai upcoming().
+            scheduled = latest_scheduled_date(_calendar.bls_schedule(moment).get(ind, []), today)
             if scheduled is not None:
                 return scheduled
             # Cadangan: kalau indikatornya tidak ada di jadwal BLS (mis. sumber lain),

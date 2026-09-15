@@ -17,14 +17,18 @@ terpisah bila diperlukan.
 """
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
 import requests
 from dotenv import load_dotenv
+
+from src.schedule import validate_schedule
 
 load_dotenv()  # modul dipakai CLI & dashboard; dotenv tidak auto-load oleh Python
 
@@ -61,7 +65,9 @@ RELEASE_TIME_ET: dict[str, time] = {
 # menjelang rilis (false negative H-1 yang berbahaya). Jadwal BLS = sumber
 # kebenaran forward-looking; FRED hanya cadangan/verifikasi historis.
 #
-# NOTE: perbarui setiap awal tahun dari bls.gov/schedule (open work: auto-fetch).
+# NOTE: sejak 15 Sep 2026 ini CADANGAN. Sumber utama = data/schedule.json yang ditulis
+# `scripts/fetch_schedule.py` dari ICS resmi BLS + kalender FOMC, dipakai hanya kalau
+# lolos `src.schedule.validate_schedule` (lihat `effective_schedule()`).
 BLS_SCHEDULE: dict[str, list[str]] = {
     # CPI 2026 (data -> rilis): Jan 13, Feb 13, Mar 11, Apr 10, May 12, Jun 10,
     # Jul 14, Aug 12, Sep 11, Oct 14, Nov 10, Dec 10
@@ -159,6 +165,56 @@ SERIES_BY_INDICATOR: dict[str, str] = {
 
 WIB = ZoneInfo("Asia/Jakarta")
 
+# Jadwal hasil fetch (lihat scripts/fetch_schedule.py). Artefak, bukan sumber: di-gitignore.
+SCHEDULE_PATH = Path(__file__).resolve().parent.parent / "data" / "schedule.json"
+
+
+def load_schedule_file(
+    path: Optional[Path] = None, today: Optional[date] = None
+) -> tuple[Optional[dict], list[str]]:
+    """(data, alasan penolakan). data None = file tidak ada / tidak valid → pakai konstanta.
+
+    Divalidasi ulang setiap dimuat, bukan hanya saat ditulis: file yang disunting tangan
+    atau terpotong tidak boleh diam-diam jadi jadwal.
+    """
+    path = Path(path or SCHEDULE_PATH)
+    today = today or datetime.now(timezone.utc).date()
+    if not path.exists():
+        return None, [f"{path.name} tidak ada"]
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return None, [f"{path.name} tidak terbaca: {type(exc).__name__}"]
+    errors = validate_schedule(data, today)
+    return (None, errors) if errors else (data, [])
+
+
+def effective_schedule(now: Optional[datetime] = None, path: Optional[Path] = None) -> dict:
+    """Jadwal yang benar-benar dipakai: {"BLS": {...}, "FOMC": [...], "sources": {...}, "file_errors": [...]}.
+
+    File valid = sumber UTAMA untuk indikator yang dimuatnya; indikator yang tidak ada di
+    file (GDP — jadwal BEA, tidak di-fetch) dan seluruh jadwal saat file tidak valid jatuh
+    ke konstanta di atas. `sources` menyebut asal tiap indikator supaya alarm cakupan dan
+    dashboard tidak mengira konstanta sebagai hasil fetch.
+    """
+    now = now or datetime.now(timezone.utc)
+    data, errors = load_schedule_file(path, now.date())
+    bls: dict[str, list[str]] = {k: list(v) for k, v in BLS_SCHEDULE.items()}
+    sources = {k: "constants" for k in list(BLS_SCHEDULE) + ["FOMC"]}
+    fomc = list(FOMC_SCHEDULE)
+    if data is not None:
+        for ind, dates in data["BLS"].items():
+            bls[ind] = list(dates)
+            sources[ind] = "file"
+        fomc = list(data["FOMC"])
+        sources["FOMC"] = "file"
+    return {"BLS": bls, "FOMC": fomc, "sources": sources, "file_errors": errors}
+
+
+def bls_schedule(now: Optional[datetime] = None) -> dict[str, list[str]]:
+    """Jadwal BLS/BEA efektif (file kalau valid, else konstanta). Pengganti `BLS_SCHEDULE`."""
+    return effective_schedule(now)["BLS"]
+
 
 @dataclass(frozen=True)
 class ScheduledRelease:
@@ -254,6 +310,7 @@ def upcoming(horizon_days: int = 90, now: Optional[datetime] = None) -> list[Sch
     now = now or datetime.now(timezone.utc)
     end = now.date() + timedelta(days=horizon_days)
     out: list[ScheduledRelease] = []
+    schedule = effective_schedule(now)
 
     # Gabungkan semua indikator: RELEASE_IDS (BLS+BEA via BLS_SCHEDULE, punya FRED
     # id) + FOMC (murni kalender Fed, tanpa FRED id).
@@ -262,13 +319,13 @@ def upcoming(horizon_days: int = 90, now: Optional[datetime] = None) -> list[Sch
     for indicator in sorted(all_indicators):
         candidates: set[date] = set()
         # Sumber 1: jadwal resmi (BLS/BEA + FOMC), forward-looking.
-        for iso in BLS_SCHEDULE.get(indicator, []):
+        for iso in schedule["BLS"].get(indicator, []):
             try:
                 candidates.add(date.fromisoformat(iso))
             except ValueError:
                 continue
         if indicator == "FOMC":
-            for iso in FOMC_SCHEDULE:
+            for iso in schedule["FOMC"]:
                 try:
                     candidates.add(date.fromisoformat(iso))
                 except ValueError:
