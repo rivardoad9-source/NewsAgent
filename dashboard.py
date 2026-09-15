@@ -37,6 +37,7 @@ from src import telegram_bot  # noqa: E402
 from src.providers import fmp  # noqa: E402
 from src.action import TIMEFRAMES, build_action_plan, load_calibration  # noqa: E402
 from src.backtest import run_intraday_backtest  # noqa: E402
+from src.live_calibration_view import live_calibration_view, load_live_calibration  # noqa: E402
 from src.thesis import build_long_term, build_short_term  # noqa: E402
 
 WIB = ZoneInfo("Asia/Jakarta")
@@ -900,6 +901,21 @@ with tab2:
                        "surprise", "verdict"] + [f"ret_{t}" for t in TIMEFRAMES]]
             st.dataframe(show.sort_values("release_date", ascending=False),
                          width="stretch", hide_index=True)
+
+    # F3b: feed live berdampingan dengan backtest. HANYA membaca data/calibration_live.json;
+    # keputusan (src/action.py) tetap dari data/calibration.json.
+    live_view = live_calibration_view(*load_live_calibration())
+    section("F3b", "Live vs Backtest (feed belajar)",
+            f"n={live_view['n']} sinyal berarah · pembanding" if live_view["status"] == "ok"
+            else "data/calibration_live.json")
+    if live_view["status"] == "empty":
+        st.markdown(f'<div class="note">{live_view["message"]}.</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(f'<div class="note note-w">{live_view["warning"]}</div>', unsafe_allow_html=True)
+        st.dataframe(pd.DataFrame(live_view["rows"]), width="stretch", hide_index=True)
+        if live_view["revision_line"]:
+            st.caption(live_view["revision_line"])
+        st.caption(live_view["message"])
 
 
 # ---------------------------------------------------------------------------
