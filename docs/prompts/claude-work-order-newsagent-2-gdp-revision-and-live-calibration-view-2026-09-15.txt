@@ -1,0 +1,57 @@
+WORK ORDER (NewsAgent) #2 — 15 Sep 2026
+Repo: ~/NewsAgent — branch dari `main` TERBARU (kalau `work/schedule-autofetch-and-live-learning` sudah
+di-merge, itu jadi basisnya; kalau belum, tetap dari main dan tulis basis lu di laporan).
+Branch baru: work/gdp-revision-monitor-and-live-calibration-view
+
+Dua tugas kecil. Ini SISA dari WO#1 (opsional #5 di WO#1 = belum digarap) + satu pengikat loop yang belum
+dipasang. Jangan kerjakan item P0/P1/P2 lain — semuanya sudah selesai di branch WO#1.
+
+KONTEKS — HASIL CEK, bukan dugaan:
+- `scripts/tick.py` baris 139: `_event_already_recorded(indicator, obs_date)` — dedupe rilis berdasarkan
+  pasangan **(indicator, obs_date)**. GDP punya **advance / second / third estimate dengan obs_date SAMA**
+  (lihat `src/calendar.py` baris 91–96: komentar repo sendiri sudah bilang "second/third = revisi").
+  Akibatnya: **kalau BEA merevisi GDP, tick menganggap "sudah tercatat" → revisi itu tidak pernah masuk
+  `data/live_events.jsonl`, tidak pernah diukur reaksinya, dan tidak muncul di laporan.** Kehilangan senyap,
+  bukan error.
+- `data/live_state.json` = state tick. `data/live_events.jsonl` = feed belajar (format sama dengan WO#1).
+- `dashboard.py` baris 335 `calibration()` memakai `load_calibration()` dari `src/action.py`, dan baris 856
+  memakainya untuk menampilkan angka per pasangan. WO#1 membuat file BARU `data/calibration_live.json`
+  (angka dari feed live, TERPISAH dari `data/calibration.json` yang dibaca `action.py`) — **tidak ada yang
+  membacanya di UI**, jadi hasilnya nggak kelihatan siapa pun.
+
+== TUGAS 1 — GDP revision-aware monitor (P1) ==
+1a. Pisahkan identitas sebuah RILIS dari identitas sebuah ANGKA. Kunci "sudah tercatat" harus cukup untuk
+    membedakan: advance vs second vs third estimate (dan revisi apa pun setelahnya) pada obs_date yang sama.
+    Pilihan bentuk (pilih satu, tulis alasannya): (a) sertakan tahap estimasi di kunci, atau (b) sidik-jari nilai
+    rilis (hash/nilai mentah) di kunci, atau (c) keduanya.
+1b. Revisi **tetap dicatat** ke `data/live_events.jsonl`, tapi **DITANDAI** jelas — mis. `revision: true` +
+    `prior_value` + `revision_delta` bila nilainya tersedia dari FRED. Rilis pertama tidak boleh berubah bentuk
+    (kompatibel dengan 3 event yang sudah ada).
+1c. Ukur reaksinya seperti rilis lain (1h/4h, `null` + catatan kalau belum terjadi — JANGAN 0), dan pastikan
+    kalibrasi bisa MEMISAHKAN revisi dari first-print tanpa mengubah `data/calibration.json`.
+1d. Kalau ada revisi, laporan/cetakan harus bilang begitu dengan kalimat eksplisit (mis. "GDP Q2 second estimate:
+    revisi +0.3pp, reaksi 1h belum terukur") — bukan diam-diam dianggap rilis baru biasa.
+1e. Uji dengan data yang di-stub (FRED/HTTP di-mock). Test wajib: (i) obs_date sama, nilai sama → TIDAK dicatat
+    dua kali (dedupe masih jalan); (ii) obs_date sama, nilai beda → dicatat + `revision: true` + delta benar;
+    (iii) tiga tahap estimasi berurutan → tiga entri, satu di antaranya bertanda revisi.
+
+== TUGAS 2 — tampilkan hasil kalibrasi live di dashboard (P2) ==
+2a. Tambah satu blok/section kecil yang membaca `data/calibration_live.json` bila ada, berdampingan dengan angka
+    backtest yang sudah tampil. Kalau filenya belum ada → tampil "belum ada sampel live", bukan error dan bukan 0.
+2b. Blok itu harus membawa peringatan sampel kecil apa adanya (kalau n kecil, tulis "pembanding, BUKAN kalibrasi"
+    + nilai n) — jangan menyajikan persentase hit dari 2 event seolah setara dengan backtest.
+2c. **JANGAN menyentuh** jalur angka yang dibaca `src/action.py` (`data/calibration.json` tetap satu-satunya
+    sumber keputusan). Dashboard hanya membaca; tidak boleh ada penulisan dari UI.
+2d. Test: layout/section muncul saat file ada, dan jalur "file tidak ada" tidak crash (offline, tanpa jaringan).
+
+== ATURAN WAJIB (sama seperti WO#1) ==
+- JANGAN menyentuh repo `~/flowmetrix-ai-agent` (termasuk `data/news_blackout.json` — milik Hermes).
+- JANGAN bikin cron/systemd/pm2 — cron dipasang Hermes di server.
+- JANGAN ubah `.env`. Data yang tak terukur → `null` + catatan, JANGAN 0.
+- Test WAJIB offline (fixture, mock). Baseline repo ini: `.venv/bin/python -m unittest discover -s tests -v`
+  → 38 test OK di main; branch WO#1 menambah sampai 90 OK. **Ukur dan tulis angka baseline lu sendiri**
+  sebelum-sesudah; jangan melemahkan test lama atau membuatnya butuh jaringan.
+- Commit kecil + push ke `work/gdp-revision-monitor-and-live-calibration-view` (JANGAN main), pesan commit
+  memuat KENAPA.
+- Laporan: Indonesia, tabel, angka mentah, langkah uji nyata (kalau ada yang bisa dijalankan offline, jalankan
+  dan tempel outputnya), plus section "yang gw nggak bisa klaim".
