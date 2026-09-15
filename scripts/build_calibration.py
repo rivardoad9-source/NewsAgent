@@ -96,6 +96,33 @@ def live_summary(events: Iterable[dict], backtest: Optional[dict] = None) -> dic
     Fungsi murni: tanpa I/O. `backtest` = isi calibration.json (boleh None/kosong).
     """
     pairs = (backtest or {}).get("pairs", {})
+    events = list(events)
+    # Revisi (GDP second/third estimate, `revision: true`) DIPISAH dari first print: surprise
+    # revisi diukur vs estimasi sebelumnya, bukan vs kuartal lalu, jadi mencampurnya ke
+    # hit-rate first print akan mengukur dua hal berbeda dengan satu angka.
+    revisions = [ev for ev in events if ev.get("revision") is True]
+    first_prints = [ev for ev in events if ev.get("revision") is not True]
+    out = _summarize(first_prints, pairs)
+    out_rev = _summarize(revisions, {})
+    return {
+        "source": "live",
+        "compared_with": "backtest",
+        "backtest_generated_at": (backtest or {}).get("generated_at"),
+        "rule": (
+            f"verdict vs tanda gerak {LIVE_ASSET} {LIVE_HORIZON}; NEUTRAL & gerak null di luar "
+            "denominator; gerak tepat 0 = miss"
+        ),
+        "by_indicator": out["by_indicator"],
+        "total": out["total"],
+        "revisions": {
+            "note": "revisi (revision: true) tidak masuk by_indicator/total; tidak dibandingkan backtest",
+            "by_indicator": out_rev["by_indicator"],
+            "total": out_rev["total"],
+        },
+    }
+
+
+def _summarize(events: list[dict], pairs: dict) -> dict:
     by_ind: dict[str, dict] = {}
     total = _bucket()
     for ev in events:
@@ -126,22 +153,18 @@ def live_summary(events: Iterable[dict], backtest: Optional[dict] = None) -> dic
         b["backtest_n_directional"] = bt.get("n_directional")
         b["delta_pp"] = round(b["hit_rate"] - rate, 1) if b["hit_rate"] is not None and rate is not None else None
     _finish(total)
-    return {
-        "source": "live",
-        "compared_with": "backtest",
-        "backtest_generated_at": (backtest or {}).get("generated_at"),
-        "rule": (
-            f"verdict vs tanda gerak {LIVE_ASSET} {LIVE_HORIZON}; NEUTRAL & gerak null di luar "
-            "denominator; gerak tepat 0 = miss"
-        ),
-        "by_indicator": dict(sorted(by_ind.items())),
-        "total": total,
-    }
+    return {"by_indicator": dict(sorted(by_ind.items())), "total": total}
 
 
 def render_live(summary: dict) -> list[str]:
+    rev = (summary.get("revisions") or {}).get("total") or {}
+    rev_line = (
+        f"  REVISI (dipisah dari first print): {rev['n_events']} event, n={rev['n']}, hit={rev['hits']}, "
+        f"hit%={'—' if rev.get('hit_rate') is None else rev['hit_rate']}"
+        if rev.get("n_events") else None
+    )
     if summary["total"]["n_events"] == 0:
-        return ["LIVE: belum ada event live"]
+        return ["LIVE: belum ada event live"] + ([rev_line] if rev_line else [])
     fmt = lambda v, s="": "—" if v is None else f"{v}{s}"  # noqa: E731
     out = [f"LIVE vs BACKTEST ({summary['rule']})",
            f"  {'IND':13} {'event':>5} {'neutral':>7} {'unmeas':>6} {'n':>3} {'hit':>3} "
@@ -152,6 +175,8 @@ def render_live(summary: dict) -> list[str]:
             f"  {ind:13} {b['n_events']:>5} {b['neutral']:>7} {b['unmeasured']:>6} {b['n']:>3} {b['hits']:>3} "
             f"{fmt(b['hit_rate']):>6} {fmt(b.get('backtest_alignment_rate')):>9} {fmt(b.get('delta_pp')):>8}"
         )
+    if rev_line:
+        out.append(rev_line)
     out.append("  Sampel live sangat kecil: angka ini pembanding, BUKAN kalibrasi.")
     return out
 

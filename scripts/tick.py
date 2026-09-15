@@ -43,6 +43,7 @@ load_dotenv()
 from src import calendar  # noqa: E402
 from src import telegram_bot  # noqa: E402
 from src import bls_fast_release  # noqa: E402
+from src import revision  # noqa: E402
 from src.action import get_stats  # noqa: E402
 from src.providers import binance, fred  # noqa: E402
 from src.rule_engine import INDICATOR_TABLE, VerdictResult, get_verdict  # noqa: E402
@@ -51,11 +52,15 @@ DATA_DIR = ROOT / "data"
 STATE_FILE = DATA_DIR / "live_state.json"
 EVENTS_FILE = DATA_DIR / "live_events.jsonl"
 
-# Indikator yang dipantau otomatis. GDP TIDAK ada di sini: observasi FRED GDP
-# memakai tanggal label kuartal yang TIDAK berubah saat revisi (advance/
-# preliminary/final), jadi deteksi "tanggal observasi baru" tidak bisa
-# membedakan rilis GDP baru. GDP tetap tampil di dashboard.
+# Indikator yang dipantau lewat deteksi "tanggal observasi baru". GDP TIDAK ada di
+# sini: observasi FRED GDP memakai tanggal label kuartal yang TIDAK berubah saat revisi
+# (advance/second/third), jadi GDP dipantau terpisah lewat REVISION_AWARE di bawah.
 MONITORED = ["CPI", "PPI", "NFP", "UNEMPLOYMENT"]
+
+# Indikator yang DIREVISI dengan obs_date sama. Dipantau lewat `process_revision_aware`:
+# kuncinya sidik-jari nilai (src/revision.py), bukan tanggal observasi, sehingga advance /
+# second / third estimate masing-masing tercatat dan revisinya DITANDAI.
+REVISION_AWARE = ["GDP"]
 
 ASSETS = ["BTC/USD", "ETH/USD"]
 
@@ -157,6 +162,26 @@ def _event_already_recorded(indicator: str, obs_date: str) -> bool:
     except FileNotFoundError:
         return False
     return False
+
+
+def read_events() -> list[dict]:
+    """Semua baris valid feed belajar (berkas hilang = [])."""
+    out: list[dict] = []
+    try:
+        with EVENTS_FILE.open(encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(record, dict):
+                    out.append(record)
+    except FileNotFoundError:
+        return []
+    return out
 
 
 def explain_text(indicator: str, verdict_display: str, delta, actual, previous) -> str:
@@ -291,6 +316,142 @@ def process_indicator(indicator: str, state: dict, dry_run: bool, force: bool = 
     return {"indicator": indicator, "action": "sent" if result.ok else "send-failed", "ok": result.ok, "detail": result.detail}
 
 
+def _scheduled_release_moment(indicator: str, obs_str: str) -> tuple[datetime, str, str]:
+    """Momen rilis untuk indikator yang direvisi: tanggal TERJADWAL terakhir <= hari ini.
+
+    `calendar.last_release_date` (FRED) tertinggal dari rilis BEA, dan revisi terjadi pada
+    tanggal second/third estimate — jadwal efektif (file atau konstanta) yang tahu itu.
+    Tanpa entri jadwal: jatuh ke `_release_moment` seperti rilis lain.
+    """
+    today = datetime.now(timezone.utc).date()
+    rd = bls_fast_release.latest_scheduled_date(calendar.bls_schedule().get(indicator, []), today)
+    if rd is None:
+        return _release_moment(indicator, obs_str)
+    release_utc = calendar._to_utc(rd, indicator)
+    return release_utc, release_utc.astimezone(WIB).strftime("%H:%M"), rd.isoformat()
+
+
+def process_revision_aware(indicator: str, state: dict, dry_run: bool, force: bool = False) -> dict:
+    """Seperti `process_indicator`, tetapi dedupe per NILAI sehingga revisi tercatat.
+
+    Rilis pertama untuk sebuah obs_date ditulis dengan bentuk baris yang SAMA persis dengan
+    rilis lain. Revisi menambah `revision: true`, `prior_value`, `revision_delta`,
+    `estimate_stage` (+ basisnya) dan kalimat eksplisit di pesan — tidak pernah diam-diam
+    dianggap rilis baru biasa.
+    """
+    spec = INDICATOR_TABLE.get(indicator)
+    label = spec.label if spec else indicator
+    unit = spec.unit if spec else ""
+
+    series = fred.get_indicator_series(indicator, limit=60)
+    if not series.ok or len(series.points) < 2:
+        return {"indicator": indicator, "action": "skip", "reason": f"FRED: {series.detail or series.status}"}
+    latest_date, actual = series.points[-1]
+    obs_str = str(latest_date)
+    previous = series.points[-2][1]
+    if previous is None or actual is None:
+        return {"indicator": indicator, "action": "skip", "reason": "nilai aktual/previous None"}
+
+    seeds = state.setdefault("last_value", {})
+    seed_key = f"{indicator}|{obs_str}"
+    known = revision.recorded_values(read_events(), indicator, obs_str)
+    seeded = seeds.get(seed_key)
+    if seeded is not None and revision._norm(seeded) not in known:
+        known = [revision._norm(seeded)] + known
+
+    if not known and state.get("last_obs", {}).get(indicator) is None and not force:
+        # Instalasi baru: catat baseline tanpa kirim, sama seperti indikator lain.
+        seeds[seed_key] = actual
+        state.setdefault("last_obs", {})[indicator] = obs_str
+        if not dry_run:
+            save_state(state)
+        return {"indicator": indicator, "action": "seed", "reason": f"baseline {obs_str} = {actual}"}
+
+    info = revision.classify(actual, known)
+    if info is None:
+        return {"indicator": indicator, "action": "idle", "reason": f"obs {obs_str} nilai {actual} sudah tercatat"}
+
+    delta = float(actual) - float(previous)
+    verdict: VerdictResult = get_verdict(indicator, delta)
+    display = verdict.display_bias if verdict.verdict is not None else "NO_VERDICT"
+    release_utc, wib_hhmm, rel_iso = _scheduled_release_moment(indicator, obs_str)
+
+    moves = {}
+    for asset in ASSETS:
+        moves[asset] = binance.returns_after(asset, release_utc)
+
+    explanation = explain_text(indicator, display, delta, actual, previous)
+    sentence = None
+    if info["revision"]:
+        sentence = revision.revision_sentence(indicator, obs_str, info, actual, moves, unit=unit)
+        explanation = (
+            f"{sentence}.\nIni REVISI angka kuartal yang sama, bukan rilis kuartal baru; verdict di "
+            "atas tetap dihitung vs kuartal sebelumnya.\n" + explanation
+        )
+
+    result = telegram_bot.send_news_result(
+        event_label=label if not info["revision"] else f"{label} (REVISI {info['estimate_stage']})",
+        release_date=rel_iso,
+        release_wib=wib_hhmm,
+        actual=float(actual),
+        previous=float(previous),
+        delta=delta,
+        verdict_display=display,
+        rationale=verdict.rationale or "",
+        unit=unit,
+        moves=moves,
+        explain=explanation,
+        hist_context=hist_context(indicator),
+        dry_run=dry_run,
+    )
+
+    if dry_run:
+        if sentence:
+            print(f"[tick] {sentence}")
+        print(result.message_preview if result.message_preview else "(tidak ada preview)")
+        return {"indicator": indicator, "action": "dry-run", "ok": result.ok, "detail": result.detail, "revision": info["revision"]}
+
+    if result.ok:
+        record = {
+            "ts_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "indicator": indicator,
+            "label": label,
+            "obs_date": obs_str,
+            "release_utc": release_utc.isoformat(timespec="minutes"),
+            "actual": actual,
+            "previous": previous,
+            "naive_delta": round(delta, 4),
+            "verdict": display,
+            "rationale": verdict.rationale,
+            "moves": moves,
+            "baseline": "naive-previous",
+        }
+        if info["revision"]:
+            record.update(
+                {
+                    "revision": True,
+                    "prior_value": info["prior_value"],
+                    "revision_delta": info["revision_delta"],
+                    "estimate_stage": info["estimate_stage"],
+                    "estimate_stage_basis": revision.STAGE_BASIS,
+                }
+            )
+        append_event(record)
+        state.setdefault("last_obs", {})[indicator] = obs_str
+        state.setdefault("last_release", {})[indicator] = rel_iso
+        seeds[seed_key] = actual
+        save_state(state)
+
+    return {
+        "indicator": indicator,
+        "action": "sent" if result.ok else "send-failed",
+        "ok": result.ok,
+        "detail": result.detail,
+        "revision": info["revision"],
+        "sentence": sentence,
+    }
+
+
 def process_fast_release(indicator: str, state: dict, dry_run: bool) -> dict:
     """Kirim hasil rilis dari API resmi BLS begitu angkanya publik.
 
@@ -415,11 +576,19 @@ def main() -> int:
             series = fred.get_indicator_series(ind, limit=60)
             if series.ok and series.points:
                 state.setdefault("last_obs", {})[ind] = str(series.points[-1][0])
+        for ind in REVISION_AWARE:
+            series = fred.get_indicator_series(ind, limit=60)
+            if series.ok and series.points:
+                obs, value = series.points[-1]
+                state.setdefault("last_obs", {})[ind] = str(obs)
+                state.setdefault("last_value", {})[f"{ind}|{obs}"] = value
         save_state(state)
         print("Baseline dicatat:", json.dumps(state.get("last_obs", {})))
         return 0
 
     indicators = [force] if force else MONITORED
+    revision_aware = [i for i in ([force] if force else REVISION_AWARE) if i in REVISION_AWARE]
+    indicators = [i for i in indicators if i not in REVISION_AWARE]
     failures = 0
 
     # JALUR CEPAT DULU. Angka resmi BLS sudah publik saat rilis (dan API-nya sudah memuat
@@ -445,6 +614,11 @@ def main() -> int:
             if not out.get("ok"):
                 failures += 1
                 print(f"[tick] {ind}: GAGAL kirim — {out.get('detail')}", file=sys.stderr)
+    for ind in revision_aware:
+        out = process_revision_aware(ind, state, dry_run, force=bool(force))
+        if out["action"] in ("sent", "send-failed") and not out.get("ok"):
+            failures += 1
+            print(f"[tick] {ind}: GAGAL kirim — {out.get('detail')}", file=sys.stderr)
     # Idle/seed/skip: diam (cron no_agent: stdout kosong = senyap).
     return 1 if failures else 0
 
