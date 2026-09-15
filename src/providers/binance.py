@@ -78,7 +78,12 @@ def get_klines_15m(
     path = _cache_path(symbol, start_ms, limit)
     if use_cache and path.exists():
         try:
-            return KlineResponse(True, "OK", json.loads(path.read_text()), "dari cache")
+            cached = json.loads(path.read_text())
+            # Cache yang lebih pendek dari `limit` adalah respons PARSIAL (diambil
+            # sebelum candle-candle berikutnya terbentuk). Memakainya membuat horizon
+            # 1h/4h null selamanya - jadi dianggap miss dan diambil ulang.
+            if isinstance(cached, list) and len(cached) >= limit:
+                return KlineResponse(True, "OK", cached, "dari cache")
         except (ValueError, OSError):
             pass  # cache rusak - ambil ulang
 
@@ -97,7 +102,9 @@ def get_klines_15m(
     if not candles:
         return KlineResponse(False, "EMPTY", detail="Tidak ada candle pada rentang itu.")
 
-    if use_cache:
+    # Hanya respons LENGKAP yang di-cache: data historis tetap, tapi jendela yang
+    # belum selesai (rilis baru) masih akan bertambah candle-nya.
+    if use_cache and len(candles) >= limit:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(candles))
