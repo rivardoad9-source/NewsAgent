@@ -235,10 +235,9 @@ NOW_UTC = datetime.now(timezone.utc)
 @st.cache_data
 def load_calendar() -> pd.DataFrame:
     """
-    Kalender contoh. Waktu disimpan UTC lalu diturunkan ke ET dan WIB.
-
-    Rilis makro AS dijadwalkan dalam zona Eastern yang mengikuti DST, WIB tidak.
-    Offset WIB karena itu bergeser sepanjang tahun - konversi selalu lewat UTC.
+    Kalender CONTOH (tanggal jadian, consensus contoh). Tidak lagi ditampilkan
+    sebagai tabel jadwal - F0 memegang jadwal nyata. Masih dipakai sebagai
+    default consensus F2, countdown ticker, dan konteks action plan.
     """
     base = NOW_UTC.replace(hour=12, minute=30, second=0, microsecond=0)
     rows = [
@@ -252,9 +251,6 @@ def load_calendar() -> pd.DataFrame:
     df = pd.DataFrame(
         rows, columns=["event_type", "event_name", "scheduled_utc", "consensus", "previous", "impact"]
     )
-    df["scheduled_wib"] = df["scheduled_utc"].apply(lambda d: d.astimezone(WIB))
-    df["scheduled_et"] = df["scheduled_utc"].apply(lambda d: d.astimezone(ET))
-    df["days_out"] = df["scheduled_utc"].apply(lambda d: (d - NOW_UTC).total_seconds() / 86400)
     return df.sort_values("scheduled_utc").reset_index(drop=True)
 
 
@@ -606,35 +602,8 @@ with tab1:
             "delta naive, verdict, dan reaksi BTC - bahan kalibrasi ulang engine."
         )
 
-    horizon = st.selectbox("HORIZON", [7, 14, 30], index=0, format_func=lambda d: f"{d} HARI")
-    window = calendar[calendar["days_out"].between(0, horizon)]
-
-    section("F1", "Sim Calendar (sandbox)", f"{len(window)} event / {horizon} hari — simulasi")
-    if window.empty:
-        st.markdown(
-            '<div class="note">Tidak ada rilis high-impact pada horizon ini.</div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        st.dataframe(
-            pd.DataFrame(
-                {
-                    "EVENT": window["event_name"],
-                    "WIB": window["scheduled_wib"].dt.strftime("%a %d %b %H:%M"),
-                    "ET": window["scheduled_et"].dt.strftime("%H:%M %Z"),
-                    "CONS": window["consensus"],
-                    "PREV": window["previous"],
-                    "IMP": window["impact"],
-                    "T-MINUS": window["days_out"].apply(lambda d: f"{d:.1f}d"),
-                }
-            ),
-            width="stretch",
-            hide_index=True,
-        )
-        st.caption(
-            "Waktu disimpan UTC, diturunkan ke ET dan WIB. Offset WIB bergeser mengikuti DST "
-            "di zona Eastern — jam WIB satu event tidak tetap sepanjang tahun."
-        )
+    # F1 "Sim Calendar (sandbox)" dihapus 15 Sep 2026: tabel tanggal jadian di bawah
+    # F0 (kalender rilis NYATA) membuat dua jadwal yang saling bertentangan di satu tab.
 
     section("F2", "Scenario Simulator", "pre-event playbook")
     st.markdown(
