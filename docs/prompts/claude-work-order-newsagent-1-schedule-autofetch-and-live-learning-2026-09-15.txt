@@ -1,0 +1,103 @@
+WORK ORDER (NewsAgent) #1 untuk Claude Code (LOKAL) — 15 Sep 2026
+Repo: ~/NewsAgent — branch dari `main` yang sekarang (ujungnya `11a22ad`, 11 Sep: "docs: review metode analisa").
+Branch baru: work/schedule-autofetch-and-live-learning
+Tujuan: **berhenti gagal senyap**. Kalender rilis habis akhir tahun ini dan nggak ada yang ngeh; feed belajar
+kita menyimpan reaksi yang tidak lengkap dan tidak pernah ditambal. Kerjain 4 hal (1 P0, 1 P1, 2 P2). Jangan
+kerjain yang lain.
+
+KONTEKS (semua angka ini HASIL CEK hari ini — jangan diukur ulang, jangan diganti asumsi):
+- Test baseline sekarang: `.venv/bin/python -m unittest discover -s tests -v` → **38 test OK** (7 di
+  `tests/test_units.py` + 31 di `tests/test_bls_fast_release.py`). Test offline, tanpa jaringan.
+- Repo ini belum disentuh sejak 11 Sep (nol branch `work/*` yang terbuka).
+- `src/calendar.py`: jadwal ada di konstanta `BLS_SCHEDULE` (dict indikator → list tanggal, baris 65) dan
+  `FOMC_SCHEDULE` (list, baris 117) + `FOMC_INDICATOR_KEYS` + `EVENT_LABEL`. Isinya sekarang:
+  **51 tanggal unik, SEMUA tahun 2026, NOL entri 2027, tanggal terakhir 2026-12-23**. Baris 64 sudah menulis
+  sendiri: "perbarui setiap awal tahun dari bls.gov/schedule (open work: auto-fetch)".
+- Konsumen jadwal (jangan ubah signature-nya): `upcoming(horizon_days=90, now=None)` (baris 243, dipakai
+  `dashboard.py:269` dan `scripts/daily_brief_context.py` dengan horizon 7 hari), `last_release_date()` (baris 212),
+  `last_releases()` (baris 226). Fallback FRED `_release_dates()` (baris 175) hanya memuat rilis yang **sudah terjadi**
+  → tidak pernah menyumbang masa depan.
+- Penulis blackout engine (di luar repo ini, milik Hermes): `~/.hermes/scripts/news_blackout_write.py` —
+  `HORIZON_DAYS = 7`, `LEAD_MIN = 60` (T-60 stop entry baru), `TAIL_MIN = 45`, `HIGH_IMPACT = {CPI, PPI, NFP, FOMC, GDP}`
+  → menulis `/home/ubuntu/flowmetrix-ai-agent/data/news_blackout.json`, dan engine mengabaikan file >48 jam (fail-open).
+  Artinya: **kalau daftar rilis kosong/habisi, file blackout jadi kosong/partial dan engine bisa buka posisi tepat
+  di jam CPI/NFP — tanpa error, tanpa alert.** Itu kegagalan senyap yang mau ditutup.
+- `data/live_events.jsonl` sekarang 3 event: NFP (7 Sep) 15m/1h/4h **terisi**; PPI (10 Sep) 15m+1h terisi,
+  **4h null**; CPI (11 Sep) hanya 15m, **1h & 4h null**. Penyebabnya `scripts/tick.py`: `moves` dihitung
+  `binance.returns_after(asset, release_utc)` **saat pesan dikirim** (baris ~242–244 dan ~323–325, ditulis via
+  `append_event()` baris 133) — 1h/4h belum terjadi pada saat itu. `~/.hermes/scripts/na_scorecard.py`
+  (`HORIZON = "1h"`, baris 29) menutupinya dengan fetch live (baris 48–61) dan komentarnya menyebut eksplisit
+  "nothing ever backfills" → datanya bisa dihitung, tapi tidak pernah disimpan.
+- `scripts/build_calibration.py` (102 baris) hanya membaca `data/calibration.json`; **nol rujukan** ke
+  `data/live_events.jsonl`. Jadi statistik kalibrasi 100% dari backtest padahal feed live jalan sejak 7 Sep.
+- `dashboard.py:612` masih `section("F1", "Sim Calendar (sandbox)", …)` sementara baris 586 (`F0`) sudah
+  "Real Release Calendar (FRED)" → dua sumber jadian yang bikin bingung.
+
+== 1. AUTO-FETCH JADWAL BLS + FOMC DENGAN VALIDASI + ALARM CAKUPAN (P0) ==
+1a. Script baru (mis. `scripts/fetch_schedule.py`) yang mengambil halaman resmi BLS
+    (`https://www.bls.gov/schedule/news_release/` dan/atau halaman per indikator) dan kalender FOMC
+    (`https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm`), lalu menulis hasilnya ke
+    `data/schedule.json` dengan bentuk SAMA seperti konstanta sekarang: `{"BLS": {indikator: ["YYYY-MM-DD", …]},
+    "FOMC": ["YYYY-MM-DD", …]}`. Bentuk akhir boleh JSON (bukan file .py generated) — jelaskan pilihan lu.
+1b. `src/calendar.py` memakai file itu sebagai sumber UTAMA **kalau ada dan lolos validasi**; kalau tidak ada /
+    tidak valid → jatuh ke konstanta hardcode yang sekarang. `upcoming()`, `last_release_date()`, `last_releases()`
+    signature dan perilakunya tidak berubah untuk pemanggil.
+1c. Validasi SEBELUM menerima hasil fetch (taruh di fungsi terpisah + test): format tanggal ISO valid; urutan naik;
+    jarak antar-rilis masuk akal (CPI/PPI bulanan ≈ 20–45 hari, NFP bulanan); minimal N tanggal per indikator per
+    tahun; tidak semua tanggal di masa lalu; `FOMC` maksimal 8–9 tanggal per tahun. **Halaman error/template
+    (judul/tabel tidak ketemu) harus DITOLAK**, bukan di-parse jadi jadwal kosong yang terlihat sah.
+1d. Alarm cakupan: kalau tanggal terjauh < **60 hari** dari hari ini, atau ada indikator high-impact dengan 0 entri
+    untuk tahun depan → tulis `data/schedule_status.json` (mis. `{"last_date": …, "days_left": …, "ok": false,
+    "reason": …}`) dan keluar non-zero supaya cron kami bisa melaporkannya. **Kondisi ini SUDAH terjadi sekarang**
+    (terakhir 2026-12-23, nol 2027) — kalau script lu jalan hari ini, alarm harus menyala.
+1e. Test OFFLINE (fixture HTML di `tests/fixtures/`, nol jaringan): parse sukses; halaman error ditolak; validasi
+    menolak data ngawur; fallback ke konstanta kalau file hilang/rusak; alarm menyala saat horizon < 60 hari.
+1f. JANGAN mengarang tanggal. Kalau parsing meragukan (mis. cuma nemu sebagian indikator) → tolak, jangan tulis
+    file valid.
+
+== 2. BACKFILL HORIZON REAKSI (1h/4h) KE data/live_events.jsonl (P1) ==
+2a. Script baru (mis. `scripts/backfill_moves.py`): untuk setiap baris dengan `moves[asset][horizon] is null`
+    yang `release_utc + horizon` sudah lewat (> 30 menit), hitung ulang lewat provider Binance yang SUDAH ADA
+    (`src/providers/binance.py` → `returns_after`, `HORIZON_CANDLES = {"15m":1,"1h":4,"4h":16}`) dan **tulis ulang
+    baris itu** — idempoten, tulis atomik (file temp + rename), simpan `data/live_events.jsonl.bak` sebelum menulis,
+    dan JANGAN menduplikasi event.
+2b. Yang tetap tidak bisa dihitung (candle tidak tersedia / terlalu lampau) → biarkan `null` + catatan di baris
+    (mis. field `moves_note`), **jangan diisi 0** dan jangan dikira-kira.
+2c. Ada `--dry-run` yang mencetak rencana perubahan (baris mana, horizon mana, dari null → nilai) tanpa menulis.
+2d. Di laporan, tulis baris cron yang gw (Hermes) akan pasang (mis. `*/30 * * * *`), tapi **jangan bikin cron
+    sendiri** dan jangan jalanin cron di mesin lu.
+
+== 3. build_calibration.py MENGGABUNGKAN FEED LIVE (P2) ==
+3a. Tambah statistik dari `data/live_events.jsonl` dengan penanda sumber (`backtest` vs `live`) — tampilkan dua
+    kolom / deltanya, **jangan menimpa atau menghapus angka backtest** dan jangan menulis ulang `calibration.json`
+    tanpa penanda versi/`generatedAt`.
+3b. Perhitungan hit-rate ikut aturan yang sudah dipakai `na_scorecard.py`: arah verdict vs tanda gerak BTC horizon
+    **1h**; event `NEUTRAL` **tidak masuk denominator** (tidak pernah ambil sisi = tidak bisa salah).
+3c. Test offline. Kalau `live_events.jsonl` kosong → laporan tetap jalan, tulis "belum ada event live".
+
+== 4. DASHBOARD: BUANG / WIRE TAB SIMULASI KALENDER (P2) ==
+4a. `dashboard.py:612` (`section("F1", "Sim Calendar (sandbox)", …)`) dihapus atau di-wire ke `src/calendar.py`
+    supaya tidak bertentangan dengan `F0` (baris 586, "Real Release Calendar (FRED)"). `F2 Scenario Simulator`
+    (baris 639) **tetap** — itu playbook, beda hal.
+4b. Bersihkan variabel/helper yang jadi mati setelah itu (mis. `window`/`horizon` kalau cuma dipakai section itu),
+    jangan tinggalkan import yang tidak terpakai.
+
+== 5. OPSIONAL (cuma kalau waktu sisa) ==
+GDP revision-aware auto-monitor (open work #2) — tulis sebagai proposal + test, jangan pasang cron.
+
+== ATURAN WAJIB ==
+- JANGAN deploy, JANGAN restart layanan apa pun, JANGAN sentuh repo `~/flowmetrix-ai-agent` (mesin trading) —
+  termasuk jangan menulis `data/news_blackout.json`; itu punya Hermes.
+- JANGAN bikin cron / systemd / background daemon. Cukup script + dokumentasi baris cron-nya.
+- Test wajib OFFLINE (fixture). Baseline: `python -m unittest discover -s tests -v` → 38 test OK. Jangan ada test
+  lama yang dilemahkan, di-hapus, atau jadi butuh jaringan.
+- Jaringan hanya lewat fungsi provider/fetch yang sudah ada; jangan pernah menulis key/secret ke kode, log, atau
+  file output; jangan ubah `.env`.
+- Data yang tidak terukur → `null` + catatan. Jangan 0, jangan dikarang, jangan dibulatkan jadi kelihatan rapi.
+- Commit kecil dengan pesan yang jelasin KENAPA. Push ke branch `work/schedule-autofetch-and-live-learning`,
+  JANGAN main.
+- Laporan (Indonesia, tabel, angka mentah) + section "yang gw nggak bisa klaim" + sebut perintah test yang lu
+  jalanin dan hasilnya (angka pass/fail).
+
+PRIORITAS: 1 (P0) → 2 → 3 → 4 → 5. Kalau harus pilih satu, ambil nomor 1: itu yang mencegah engine buka posisi
+di jam CPI/NFP tanpa blackout.
